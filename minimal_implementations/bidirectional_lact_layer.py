@@ -207,7 +207,7 @@ class BidirectionalLaCTSwiGLU(torch.nn.Module):
         self.w0 = nn.Parameter(torch.randn(self.num_heads, d_h, d_in) / math.sqrt(d_in))
         self.w1 = nn.Parameter(torch.randn(self.num_heads, d_out, d_h) / math.sqrt(d_h))
         self.w2 = nn.Parameter(
-            torch.randn(self.num_heads, d_out, d_in) / math.sqrt(d_in)
+            torch.randn(self.num_heads, d_h, d_in) / math.sqrt(d_in)
         )
 
         self.qk_l2_norm = qk_l2_norm
