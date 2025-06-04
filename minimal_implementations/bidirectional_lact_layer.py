@@ -134,7 +134,6 @@ def bidirectional_lact_swiglu(
     # [b, dh, l] @ [b, l, dk] -> [b, dh, dk]
     dw0 = torch.bmm(dgate_before_act, (k * lr0).type_as(dgate_before_act))
     dw2 = torch.bmm(dhidden_before_mul, (k * lr2).type_as(dhidden_before_mul))
-    dw2 = torch.bmm(dhidden_before_mul, (k * lr2))
     
 
     if use_muon:
