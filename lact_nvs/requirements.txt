@@ -1,0 +1,9 @@
+torch>=2.4.0
+torchvision
+einops
+lpips
+omegaconf
+Pillow
+imageio
+numpy
+transformers
