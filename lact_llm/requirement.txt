@@ -1,0 +1,12 @@
+omegaconf
+Pillow
+imageio
+numpy
+pyarrow>=20.0.0
+transformers
+safetensors>=0.5.3
+einops
+torch>=2.6.0,<2.7.0
+torchvision>=0.21.0,<0.22.0
+flash-attn==2.7.4.post1
+flash-linear-attention
