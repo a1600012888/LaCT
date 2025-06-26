@@ -17,7 +17,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from einops import rearrange, repeat
 
-from .ttt_operation import block_causal_lact_swiglu, l2_norm
+from .ttt_operation import block_causal_lact_swiglu, prenorm_block_causal_lact_swiglu, l2_norm
 
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -109,6 +109,8 @@ class LaCTSWIGLULayer(nn.Module):
         use_muon: bool = False,
         lr_parameterization: str = "mamba",
         learnable_ttt_scale: bool = False,
+        ttt_prenorm: bool = False,
+        ttt_nope: bool = False,
         rope_theta: float = 500000.0,
         layer_idx: int = None,
         max_position_embeddings: int = 2048,
@@ -146,6 +148,8 @@ class LaCTSWIGLULayer(nn.Module):
         self.num_fw_heads = num_lact_heads
         self.fw_head_dim = self.hidden_size // self.num_fw_heads
         self.qkv_silu = qkv_silu
+        self.ttt_prenorm = ttt_prenorm
+        self.ttt_nope = ttt_nope
         
         d_in, d_out = self.fw_head_dim, self.fw_head_dim
         d_h = int(d_in * inter_multi)
@@ -338,22 +342,23 @@ class LaCTSWIGLULayer(nn.Module):
         fast_q = l2_norm(fast_q)
         fast_k = l2_norm(fast_k)
         
-        #### Apply rotary embedding.  Here we use the same rope as the attention layer. 
-        # I observed that using NoPE for ttt (No positional encoding) here also works. 
-        fast_q = rearrange(fast_q, '(b n_h) s d -> b s (n_h d)', n_h=self.num_fw_heads)
-        fast_k = rearrange(fast_k, '(b n_h) s d -> b s (n_h d)', n_h=self.num_fw_heads)
+        if not self.ttt_nope:
+            #### Apply rotary embedding.  Here we use the same rope as the attention layer. 
+            # I observed that using NoPE for ttt (No positional encoding) here also works. 
+            fast_q = rearrange(fast_q, '(b n_h) s d -> b s (n_h d)', n_h=self.num_fw_heads)
+            fast_k = rearrange(fast_k, '(b n_h) s d -> b s (n_h d)', n_h=self.num_fw_heads)
 
-        fast_q = rearrange(fast_q, 'b s (n_h d) -> b s n_h d', n_h=self.num_heads)
-        fast_k = rearrange(fast_k, 'b s (n_h d) -> b s n_h d', n_h=self.num_heads)
+            fast_q = rearrange(fast_q, 'b s (n_h d) -> b s n_h d', n_h=self.num_heads)
+            fast_k = rearrange(fast_k, 'b s (n_h d) -> b s n_h d', n_h=self.num_heads)
 
-        fast_q, fast_k = self.rotary(fast_q, fast_k, seqlen_offset=seqlen_offset, max_seqlen=max_seqlen, cu_seqlens=cu_seqlens)
+            fast_q, fast_k = self.rotary(fast_q, fast_k, seqlen_offset=seqlen_offset, max_seqlen=max_seqlen, cu_seqlens=cu_seqlens)
 
-        fast_q = rearrange(fast_q, 'b s n_h d -> b s (n_h d)', n_h=self.num_heads)
-        fast_k = rearrange(fast_k, 'b s n_h d -> b s (n_h d)', n_h=self.num_heads)
+            fast_q = rearrange(fast_q, 'b s n_h d -> b s (n_h d)', n_h=self.num_heads)
+            fast_k = rearrange(fast_k, 'b s n_h d -> b s (n_h d)', n_h=self.num_heads)
 
-        fast_q = rearrange(fast_q, 'b s (n_h d) -> (b n_h) s d', n_h=self.num_fw_heads)
-        fast_k = rearrange(fast_k, 'b s (n_h d) -> (b n_h) s d', n_h=self.num_fw_heads)
-        #### RoPE done. ####
+            fast_q = rearrange(fast_q, 'b s (n_h d) -> (b n_h) s d', n_h=self.num_fw_heads)
+            fast_k = rearrange(fast_k, 'b s (n_h d) -> (b n_h) s d', n_h=self.num_fw_heads)
+            #### RoPE done. ####
 
         if self.w0_w2_low_rank > 0:
             fw_w0 = self.w0().repeat(batch_size, 1, 1)
@@ -379,12 +384,22 @@ class LaCTSWIGLULayer(nn.Module):
             momentum = None
         
         # [b * nh, s, d_ttt_head]
-        fw_x = block_causal_lact_swiglu(
-            fw_w0, fw_w1, fw_w2, fast_q, fast_k, fast_v,
-            fw_lr1, fw_lr2, fw_lr3,
-            chunk_size=self.lact_chunk_size,
-            use_muon=self.use_muon,
-            momentum=momentum)
+        if self.ttt_prenorm:
+            # pre-norm version of ttt.   state = state + f(norm(state))
+            fw_x = prenorm_block_causal_lact_swiglu(
+                fw_w0, fw_w1, fw_w2, fast_q, fast_k, fast_v,
+                fw_lr1, fw_lr2, fw_lr3,
+                chunk_size=self.lact_chunk_size,
+                use_muon=self.use_muon,
+                momentum=momentum)
+        else:
+            # post-norm version of ttt.   state = norm(state + f(state))
+            fw_x = block_causal_lact_swiglu(
+                fw_w0, fw_w1, fw_w2, fast_q, fast_k, fast_v,
+                fw_lr1, fw_lr2, fw_lr3,
+                chunk_size=self.lact_chunk_size,
+                use_muon=self.use_muon,
+                momentum=momentum)
         
         # per-head output norm for ttt layer.
         ttt_x_normed = self.ttt_norm(fw_x)

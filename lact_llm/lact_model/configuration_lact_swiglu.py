@@ -36,6 +36,10 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         learnable_ttt_scale: bool = True,
         use_momentum: bool = True,
         ttt_loss_type: str = "dot_product", # "l2"
+        ttt_prenorm: bool = False,    # pre-norm or post-norm for ttt.   
+        # prenorm ttt:  state = state + f(norm(state))
+        # postnorm ttt:  state = norm(state + f(state)
+        ttt_nope: bool = False, # if True, no positional encoding for query and key used in ttt.  
         w0_w2_low_rank: int = -1, # -1 means fully learnable.  > 1 means low rank parameterization of the initial learnable weights. 
         window_size: int = 2048,
         rope_theta: Optional[float] = 10000.,
@@ -73,6 +77,8 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         self.window_size = window_size
         self.lr_parameterization = lr_parameterization
         self.learnable_ttt_scale = learnable_ttt_scale
+        self.ttt_prenorm = ttt_prenorm
+        self.ttt_nope = ttt_nope
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 

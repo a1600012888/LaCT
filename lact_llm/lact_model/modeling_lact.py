@@ -51,6 +51,8 @@ class LaCTBlock(nn.Module):
             qkv_silu=config.qkv_silu,
             lr_dim=config.lr_dim,
             use_muon=config.use_muon,
+            ttt_prenorm=config.ttt_prenorm,
+            ttt_nope=config.ttt_nope,
             lr_parameterization=config.lr_parameterization,
             learnable_ttt_scale=config.learnable_ttt_scale,
             rope_theta=config.rope_theta,
