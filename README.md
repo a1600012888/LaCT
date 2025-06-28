@@ -32,17 +32,17 @@ We provide minimal implementations for a LaCT layer in `minimal_implementations/
 ## Plans
 * ~~Release Language model code.~~ [Done] (will also release inside this great repo: https://github.com/fla-org/flame)
 * ~~Realease novel view synthesis training code and model by June 12.~~ [Done]
-* Release video model finetuning code (build on top of Wan T2V) by June 24.
+* ~~Release video model finetuning code (build on top of Wan T2V) by June 24.~~ [Done]
 
 
 ## Citations
 If you find this codebase useful for your research, please kindly cite our paper:
 
-```
-@article{zhang2025test,
+```@article{zhang2025test,
   title={Test-time training done right},
   author={Zhang, Tianyuan and Bi, Sai and Hong, Yicong and Zhang, Kai and Luan, Fujun and Yang, Songlin and Sunkavalli, Kalyan and Freeman, William T and Tan, Hao},
   journal={arXiv preprint arXiv:2505.23884},
   year={2025}
 }
 ```
+
