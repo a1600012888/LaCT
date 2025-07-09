@@ -31,7 +31,7 @@ We provide minimal implementations for a LaCT layer in `minimal_implementations/
 
 ## Plans
 * ~~Release Language model code.~~ [Done] (will also release inside this great repo: https://github.com/fla-org/flame)
-* ~~Realease novel view synthesis training code and model by June 12.~~ [Done]
+* ~~Release novel view synthesis training code and model by June 12.~~ [Done]
 * ~~Release video model finetuning code (build on top of Wan T2V) by June 24.~~ [Done]
 
 
