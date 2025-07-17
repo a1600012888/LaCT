@@ -14,14 +14,14 @@ def resize_and_crop(image, target_size, fxfycxcy):
     
     Args:
         image: PIL Image
-        target_size: (width, height) tuple
+        target_size: (height, width) tuple
         fxfycxcy: [fx, fy, cx, cy] list
     
     Returns:
         tuple: (resized_cropped_image, adjusted_fxfycxcy)
     """
-    original_width, original_height = image.size
-    target_width, target_height = target_size
+    original_width, original_height = image.size  # PIL image is (width, height)
+    target_height, target_width = target_size
     
     fx, fy, cx, cy = fxfycxcy
     
@@ -54,13 +54,52 @@ def resize_and_crop(image, target_size, fxfycxcy):
     return cropped_image, [new_fx, new_fy, new_cx, new_cy]
 
 
+def normalize(x):
+    return x / x.norm()
+
+def normalize_with_mean_pose(c2ws: torch.Tensor):
+    # This is a historical code for scene camera normalization;
+    #  thanks to the authors (might mostly credit to Zexiang Xu)
+
+    # Get the mean parameters
+    center = c2ws[:, :3, 3].mean(0)
+    vec2 = c2ws[:, :3, 2].mean(0)
+    up = c2ws[:, :3, 1].mean(0)
+
+    # Get the view matrix.
+    vec2 = normalize(vec2)
+    vec0 = normalize(torch.cross(up, vec2))
+    vec1 = normalize(torch.cross(vec2, vec0))
+    m = torch.stack([vec0, vec1, vec2, center], 1)
+
+    # Extend the view matrix to 4x4.
+    avg_pos = c2ws.new_zeros(4, 4)
+    avg_pos[3, 3] = 1.0
+    avg_pos[:3] = m
+
+    # Align coordinate system to the mean camera
+    c2ws = torch.linalg.inv(avg_pos) @ c2ws
+
+    # Scale the scene to the range of [-1, 1].
+    scene_scale = torch.max(torch.abs(c2ws[:, :3, 3]))
+    c2ws[:, :3, 3] /= scene_scale
+
+    return c2ws
+
+
 class NVSDataset(Dataset):
-    def __init__(self, data_path, num_views, image_size):
+    def __init__(self, 
+        data_path, num_views, image_size, 
+        sorted_indices=False, 
+        scene_pose_normalize=False,
+    ):
         """
-        image_size is (w, h) or just a int (as size).
+        image_size is (h, w) or just a int (as size).
         """
         self.base_dir = os.path.dirname(data_path)
         self.data_point_paths = json.load(open(data_path, "r"))
+        self.sorted_indices = sorted_indices
+        self.scene_pose_normalize = scene_pose_normalize
 
         self.num_views = num_views
         if isinstance(image_size, int):
@@ -77,7 +116,10 @@ class NVSDataset(Dataset):
         with open(data_point_path, "r") as f:
             images_info = json.load(f)
         
-        indices = random.sample(range(len(images_info)), self.num_views)
+        # If the num_views is larger than the number of images, use all images
+        indices = random.sample(range(len(images_info)), min(self.num_views, len(images_info)))
+        if self.sorted_indices:
+            indices = sorted(indices)
         
         fxfycxcy_list = []
         c2w_list = []
@@ -111,8 +153,13 @@ class NVSDataset(Dataset):
             fxfycxcy_list.append(fxfycxcy)
             image_list.append(transforms.ToTensor()(image))
         
+        c2ws = torch.stack(c2w_list)
+        if self.scene_pose_normalize:
+            print("Normalizing scene poses...")
+            c2ws = normalize_with_mean_pose(c2ws)
+
         return {
             "fxfycxcy": torch.tensor(fxfycxcy_list),
-            "c2w": torch.stack(c2w_list),
+            "c2w": c2ws,
             "image": torch.stack(image_list),
         }

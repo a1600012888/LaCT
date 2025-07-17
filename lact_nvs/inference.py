@@ -68,6 +68,61 @@ def get_turntable_cameras_with_zoom_in(
     }
 
 
+def get_interpolated_cameras(
+    cameras,
+    num_views,
+):
+    """
+    For each consecutive pair of cameras, add num_views linearly interpolated views.
+    """
+    fxfycxcy = cameras['fxfycxcy']  # [batch_size, num_input_views, 4]
+    c2w = cameras['c2w']  # [batch_size, num_input_views, 4, 4]
+    
+    batch_size, num_input_views = fxfycxcy.shape[:2]
+    
+    interpolated_fxfycxcy = []
+    interpolated_c2w = []
+    
+    for b in range(batch_size):
+        batch_fxfycxcy = []
+        batch_c2w = []
+        
+        for i in range(num_input_views - 1):
+            # Add the current view
+            batch_fxfycxcy.append(fxfycxcy[b, i])
+            batch_c2w.append(c2w[b, i])
+            
+            curr_fxfycxcy = fxfycxcy[b, i]
+            next_fxfycxcy = fxfycxcy[b, i + 1]
+            curr_c2w = c2w[b, i]
+            next_c2w = c2w[b, i + 1]
+            
+            # Create alpha values for all interpolations at once
+            alphas = torch.linspace(1 / (num_views + 1), num_views / (num_views + 1), num_views, device=fxfycxcy.device)
+            
+            # Batch interpolation for camera intrinsics
+            interp_fxfycxcy = (1 - alphas[:, None]) * curr_fxfycxcy[None, :] + alphas[:, None] * next_fxfycxcy[None, :]
+            batch_fxfycxcy.extend(interp_fxfycxcy)
+            
+            # Batch interpolation for camera poses
+            # For rotation, we should use SLERP, but for simplicity using linear interpolation
+            interp_c2w = (1 - alphas[:, None, None]) * curr_c2w[None, :, :] + alphas[:, None, None] * next_c2w[None, :, :]
+            batch_c2w.extend(interp_c2w)
+        
+        # Add the last view
+        batch_fxfycxcy.append(fxfycxcy[b, -1])
+        batch_c2w.append(c2w[b, -1])
+        
+        interpolated_fxfycxcy.append(torch.stack(batch_fxfycxcy))
+        interpolated_c2w.append(torch.stack(batch_c2w))
+    
+    return {
+        'fxfycxcy': torch.stack(interpolated_fxfycxcy),
+        'c2w': torch.stack(interpolated_c2w)
+    }
+
+
+
 parser = argparse.ArgumentParser()
 # Basic info
 parser.add_argument("--config", type=str, default="config/lact_l24_d768_ttt2x.yaml")
@@ -78,7 +133,8 @@ parser.add_argument("--num_all_views", type=int, default=32)
 
 parser.add_argument("--num_input_views", type=int, default=20)
 parser.add_argument("--num_target_views", type=int, default=None)
-parser.add_argument("--image_size", nargs=2, type=int, default=[256, 256], help="Image size W, H")
+parser.add_argument("--scene_inference", action="store_true")
+parser.add_argument("--image_size", nargs=2, type=int, default=[256, 256], help="Image size H, W")
 
 args = parser.parse_args()
 if args.num_target_views is None:
@@ -104,7 +160,7 @@ checkpoint = torch.load(args.load, map_location="cpu")
 model.load_state_dict(checkpoint["model"])
 
 # Data
-dataset = NVSDataset(args.data_path, args.num_all_views, tuple(args.image_size))
+dataset = NVSDataset(args.data_path, args.num_all_views, tuple(args.image_size), sorted_indices=args.scene_inference, scene_pose_normalize=args.scene_inference)
 dataloader_seed_generator = torch.Generator()
 dataloader_seed_generator.manual_seed(seed)
 dataloader = DataLoader(
@@ -117,8 +173,18 @@ dataloader = DataLoader(
 
 for sample_idx, data_dict in enumerate(dataloader):
     data_dict = {key: value.cuda() for key, value in data_dict.items() if isinstance(value, torch.Tensor)}
-    input_data_dict = {key: value[:, :args.num_input_views] for key, value in data_dict.items()}
-    target_data_dict = {key: value[:, -args.num_target_views:] for key, value in data_dict.items()}
+    if args.scene_inference:
+        # Randomly select input views and use remaining as target
+        total_views = data_dict["image"].shape[1]
+        all_indices = torch.randperm(total_views)
+        input_indices = torch.sort(all_indices[:args.num_input_views])[0]   # Sort for video rendering only; model forward is permutation-invariant
+        target_indices = all_indices[-args.num_target_views:]
+        
+        input_data_dict = {key: value[:, input_indices] for key, value in data_dict.items()}
+        target_data_dict = {key: value[:, target_indices] for key, value in data_dict.items()}
+    else:
+        input_data_dict = {key: value[:, :args.num_input_views] for key, value in data_dict.items()}
+        target_data_dict = {key: value[:, -args.num_target_views:] for key, value in data_dict.items()}
 
     with torch.autocast(dtype=torch.bfloat16, device_type="cuda", enabled=True) and torch.no_grad():
         rendering = model(input_data_dict, target_data_dict)
@@ -148,19 +214,27 @@ for sample_idx, data_dict in enumerate(dataloader):
             print(f"Saved images for sample {sample_idx} to {output_dir}")
         
         # Rendering a video to circularly rotate the camera views
-        target_cameras = get_turntable_cameras_with_zoom_in(
-            batch_size=1,
-            num_views=120,
-            w=args.image_size[0],
-            h=args.image_size[1],
-            min_radius=1.7,
-            max_radius=3.0,
-            elevation=30,
-            up_vector=np.array([0, 0, 1]),
-            device=torch.device("cuda"),
-        )
-        rendering = model(input_data_dict, target_cameras)
-        video_path = os.path.join(output_dir, f"sample_{sample_idx:06d}_turntable.mp4")
+        if args.scene_inference:
+            target_cameras = get_interpolated_cameras(
+                cameras=input_data_dict,
+                num_views=2,
+            )
+        else:
+            target_cameras = get_turntable_cameras_with_zoom_in(
+                batch_size=1,
+                num_views=120,
+                w=args.image_size[0],
+                h=args.image_size[1],
+                min_radius=1.7,
+                max_radius=3.0,
+                elevation=30,
+                up_vector=np.array([0, 0, 1]),
+                device=torch.device("cuda"),
+            )
+        print(target_cameras["c2w"].shape, target_cameras["fxfycxcy"].shape)
+        states = model.reconstruct(input_data_dict)
+        rendering = model.rendering(target_cameras, states, args.image_size[0], args.image_size[1])
+        video_path = os.path.join(output_dir, f"sample_{sample_idx:06d}_turntable.gif")
         frames = (rendering[0].permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)
         imageio.mimsave(video_path, frames, fps=30, quality=8)
         print(f"Saved turntable video to {video_path}")

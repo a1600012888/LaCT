@@ -269,3 +269,118 @@ class LaCTLVSM(nn.Module):
         )
         return target_x
     
+    def reconstruct(self, input_data_dict):
+        with torch.autocast(device_type="cuda", enabled=False), torch.no_grad():
+            batch_size, num_input_views, _, h, w = input_data_dict["image"].size()
+
+            fxfycxcy = input_data_dict["fxfycxcy"]
+            c2w = input_data_dict["c2w"]
+
+            input_data_dict["ray_o"], input_data_dict["ray_d"] = compute_rays(fxfycxcy, c2w, h, w)
+            input_data_dict["o_cross_d"] = torch.cross(input_data_dict["ray_o"], input_data_dict["ray_d"], dim=2)
+            input_data_dict["pose_only"] = torch.concat(
+                [input_data_dict[key] for key in self.pose_keys], dim=2
+            )
+                
+            input_data_dict["normalized_image"] = input_data_dict["image"] * 2.0 - 1.0
+
+            # Compile the information for posed-image input, and pose-only input.
+            posed_image = torch.concat(
+                [input_data_dict[key] for key in self.posed_image_keys], dim=2
+            )
+            
+        # Running the model
+        num_img_tokens = h * w // (self.patch_size**2)
+        num_input_tokens = num_input_views * num_img_tokens
+        ttt_op_order = [
+            TTTOperator(start=0, end=num_input_tokens, update=True, apply=True),
+        ]
+        info = {
+            "ttt_op_order": ttt_op_order,
+            "num_img_tokens": num_img_tokens,
+        }
+
+        x = rearrange(
+            posed_image,
+            "b v c (hh ph) (ww pw) -> b (v hh ww) (ph pw c)",
+            ph=self.patch_size,
+            pw=self.patch_size,
+        )
+        x = self.input_linear(x)
+        x = self.input_layernorm(x)
+        states = []
+        for block in self.blocks:
+            x, state = block(x, info)
+            states.append(state)
+        return states
+    
+    def rendering(self, target_data_dict, states, h, w):
+        with torch.autocast(device_type="cuda", enabled=False):
+            batch_size, num_target_views, _, _ = target_data_dict["c2w"].size()
+
+            fxfycxcy = target_data_dict["fxfycxcy"]
+            c2w = target_data_dict["c2w"]
+
+            target_data_dict["ray_o"], target_data_dict["ray_d"] = compute_rays(fxfycxcy, c2w, h, w)
+            target_data_dict["o_cross_d"] = torch.cross(target_data_dict["ray_o"], target_data_dict["ray_d"], dim=2)
+            target_data_dict["pose_only"] = torch.concat(
+                [target_data_dict[key] for key in self.pose_keys], dim=2
+            )
+
+            pose_only = target_data_dict["pose_only"].new_zeros(
+                batch_size, num_target_views, self.input_dim, h, w
+            )  
+            pose_only_dim = target_data_dict["pose_only"].size(2)
+            pose_only[:, :, :pose_only_dim, :, :] = target_data_dict["pose_only"]
+            
+        # Running the model for rendering
+        num_img_tokens = h * w // (self.patch_size**2)
+        num_target_tokens = num_target_views * num_img_tokens
+        ttt_op_order = [
+            TTTOperator(start=0, end=num_target_tokens, update=False, apply=True),
+        ]
+        info = {
+            "ttt_op_order": ttt_op_order,
+            "num_img_tokens": num_img_tokens,
+        }
+
+        # Process each target view separately
+        all_x = []
+        for v in range(num_target_views):
+            single_view_pose = pose_only[:, v:v+1]  # b, 1, c, h, w
+            
+            x = rearrange(
+                single_view_pose,
+                "b v c (hh ph) (ww pw) -> b (v hh ww) (ph pw c)",
+                ph=self.patch_size,
+                pw=self.patch_size,
+            )
+            x = self.input_linear(x)
+            x = self.input_layernorm(x)
+            
+            # Apply the saved states from reconstruction
+            for block, state in zip(self.blocks, states):
+                info.update(state)
+                x, _ = block(x, info)
+            
+            all_x.append(x)
+        
+        # Concatenate all processed views
+        x = torch.cat(all_x, dim=1)
+            
+        # Generate target images
+        target_x = self.image_token_decoder(x)
+        target_x = rearrange(
+            target_x,
+            "b (v hh ww) (ph pw c) -> b v c (hh ph) (ww pw)",
+            v=num_target_views,
+            hh=h // self.patch_size,
+            ww=w // self.patch_size,
+            ph=self.patch_size,
+            pw=self.patch_size,
+            c=3,
+        )
+        
+        return target_x
+
+    

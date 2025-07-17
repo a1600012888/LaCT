@@ -33,7 +33,8 @@ parser.add_argument("--bs_per_gpu", type=int, default=8)
 parser.add_argument("--num_all_views", type=int, default=15)
 parser.add_argument("--num_input_views", type=int, default=8)
 parser.add_argument("--num_target_views", type=int, default=8)  
-parser.add_argument("--image_size", nargs=2, type=int, default=[256, 256], help="Image size W, H")
+parser.add_argument("--image_size", nargs=2, type=int, default=[256, 256], help="Image size H, W")
+parser.add_argument("--scene_pose_normalize", action="store_true")
 
 # Optimizer
 parser.add_argument("--lr", type=float, default=1e-4)
@@ -135,7 +136,7 @@ def remove_module_prefix(state_dict):
     return new_state_dict
 
 # Data
-dataset = NVSDataset(args.num_all_views, tuple(args.image_size))
+dataset = NVSDataset(args.data_path, args.num_all_views, tuple(args.image_size), scene_pose_normalize=args.scene_pose_normalize)
 datasampler = DistributedSampler(dataset)
 
 dataloader = DataLoader(

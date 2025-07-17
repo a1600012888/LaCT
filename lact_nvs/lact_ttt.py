@@ -201,7 +201,7 @@ class FastWeightGluMLPMultihead(nn.Module):
 
         self.o_norm = torch.nn.RMSNorm(head_dim, eps=1e-5, elementwise_affine=True)
 
-    def forward(self, x: torch.Tensor, info=None, *args):
+    def forward(self, x: torch.Tensor, info={}, *args):
         """
         x: (b, l, d)
         """

@@ -1,0 +1,21 @@
+patch_size: 8
+dim: 768
+layers: 24
+
+block_config:
+  - type: model.SelfAttention
+    length_dim: l
+    params:
+      head_dim: 64
+      use_qk_norm: true
+  - type: lact_ttt.FastWeightGluMLPMultihead
+    length_dim: vl
+    params:
+      head_dim: 768 # 256
+      inter_multi: 4
+      base_lr: 0.01
+      muon_update_steps: 5
+  - type: model.MLP
+    length_dim: vl
+    params:
+      inter_multi: 4
