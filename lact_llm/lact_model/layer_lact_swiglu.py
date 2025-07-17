@@ -442,7 +442,7 @@ class LaCTSWIGLULayer(nn.Module):
         else:
             # The -q_len: slice assumes left padding.
             attention_mask = attention_mask[:, -q_len:]
-            q, indices_q, cu_seqlens_q, max_seqlen_q = unpad_input(q, attention_mask)
+            q, indices_q, cu_seqlens_q, max_seqlen_q, _ = unpad_input(q, attention_mask)
 
         return q, k, v, indices_q, (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k)
 
