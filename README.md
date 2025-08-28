@@ -38,7 +38,8 @@ We provide minimal implementations for a LaCT layer in `minimal_implementations/
 ## Citations
 If you find this codebase useful for your research, please kindly cite our paper:
 
-```@article{zhang2025test,
+```
+@article{zhang2025test,
   title={Test-time training done right},
   author={Zhang, Tianyuan and Bi, Sai and Hong, Yicong and Zhang, Kai and Luan, Fujun and Yang, Songlin and Sunkavalli, Kalyan and Freeman, William T and Tan, Hao},
   journal={arXiv preprint arXiv:2505.23884},
