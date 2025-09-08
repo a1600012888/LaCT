@@ -9,12 +9,12 @@ from einops import rearrange
 
 TTTOperator = collections.namedtuple("TTTOperator", ["start", "end", "update", "apply"])
 
-
+@torch.compile
 def inv_softplus(x):
     y = x + math.log(-math.expm1(-x))
     return y
 
-
+@torch.compile
 def silu_backprop(dy: torch.Tensor, x: torch.Tensor):
     """
     Args:
@@ -67,7 +67,7 @@ def zeropower_via_newtonschulz5(G, steps):
     return X
 
 
-
+@torch.compile
 def fast_weight_swish_glu_weight_norm_mini_batch_apply(
     w0: torch.Tensor,
     w1: torch.Tensor,
