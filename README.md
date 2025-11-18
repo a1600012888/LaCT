@@ -29,6 +29,9 @@
 We provide minimal implementations for a LaCT layer in `minimal_implementations/`. This implementation serves as a starting point for understanding, modifying, and creating your own version of LaCT.
 
 
+## News
+November 18: Added Triton kernels for the fused TTT layer (see `lact_llm/lact_model/ttt_operation_fused_kernel.py` for implementation, with a updated moddel config in `configs/760M_lact_swiglu_nh4_fwlow_rank_momentum_fused_kernel.json`). This reduces training memory consumption. The triton kernel fuse several matmul with epilogues to reduce read and writes in global mememory. 
+
 ## Plans
 * ~~Release Language model code.~~ [Done] (will also release inside this great repo: https://github.com/fla-org/flame)
 * ~~Release novel view synthesis training code and model by June 12.~~ [Done]
