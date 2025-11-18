@@ -10,7 +10,10 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from transformers.generation import GenerationMixin
-from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+)
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import logging
 from transformers.utils.deprecation import deprecate_kwarg
@@ -28,7 +31,7 @@ logger = logging.get_logger(__name__)
 
 if TYPE_CHECKING:
     from transformers.processing_utils import Unpack
-        
+
 
 class LaCTBlock(nn.Module):
 
@@ -38,7 +41,9 @@ class LaCTBlock(nn.Module):
         self.config = config
         self.layer_idx = layer_idx
 
-        self.attn_norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(config.hidden_size, eps=config.norm_eps)
+        self.attn_norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(
+            config.hidden_size, eps=config.norm_eps
+        )
         self.attn = LaCTSWIGLULayer(
             hidden_size=config.hidden_size,
             num_attn_heads=config.num_attn_heads,
@@ -49,6 +54,7 @@ class LaCTBlock(nn.Module):
             qkv_bias=config.qkv_bias,
             attn_qk_norm=config.attn_qk_norm,
             qkv_silu=config.qkv_silu,
+            no_v_silu=config.no_v_silu,
             lr_dim=config.lr_dim,
             use_muon=config.use_muon,
             ttt_prenorm=config.ttt_prenorm,
@@ -61,16 +67,20 @@ class LaCTBlock(nn.Module):
             w0_w2_low_rank=config.w0_w2_low_rank,
             use_momentum=config.use_momentum,
             ttt_loss_type=config.ttt_loss_type,
-            fw_init_gain=config.fw_init_gain
+            fw_init_gain=config.fw_init_gain,
+            use_fused_kernel=config.use_fused_kernel,
+            fp32_states=config.fp32_states,
         )
 
-        self.mlp_norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(config.hidden_size, eps=config.norm_eps)
+        self.mlp_norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(
+            config.hidden_size, eps=config.norm_eps
+        )
         self.mlp = TransformerMLP(
             hidden_size=config.hidden_size,
             hidden_ratio=config.hidden_ratio,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
-            fuse_swiglu=config.fuse_swiglu
+            fuse_swiglu=config.fuse_swiglu,
         )
 
     def forward(
@@ -80,8 +90,10 @@ class LaCTBlock(nn.Module):
         past_key_values: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        **kwargs: Unpack[Any]
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        **kwargs: Unpack[Any],
+    ) -> Tuple[
+        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
+    ]:
 
         residual = hidden_states
         hidden_states = self.attn_norm(hidden_states)
@@ -91,7 +103,7 @@ class LaCTBlock(nn.Module):
             past_key_values=past_key_values,
             use_cache=use_cache,
             output_attentions=output_attentions,
-            **kwargs
+            **kwargs,
         )
         if self.config.fuse_norm:
             hidden_states, residual = self.mlp_norm(hidden_states, residual, True)
@@ -115,10 +127,10 @@ class LaCTBlock(nn.Module):
 
 class LaCTPreTrainedModel(PreTrainedModel):
 
-    config_class =  LaCTSWIGLUConfig
-    base_model_prefix = 'model'
+    config_class = LaCTSWIGLUConfig
+    base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ['LaCTBlock']
+    _no_split_modules = ["LaCTBlock"]
     _supports_cache_class = True
 
     def __init__(self, *inputs, **kwargs):
@@ -138,7 +150,7 @@ class LaCTPreTrainedModel(PreTrainedModel):
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
-        elif hasattr(module, 'reset_parameters'):
+        elif hasattr(module, "reset_parameters"):
             module.reset_parameters()
 
         if rescale_prenorm_residual:
@@ -149,9 +161,9 @@ class LaCTPreTrainedModel(PreTrainedModel):
             #
             # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
             p = None
-            if hasattr(module, 'o_proj'):
+            if hasattr(module, "o_proj"):
                 p = module.o_proj.weight
-            elif hasattr(module, 'down_proj'):
+            elif hasattr(module, "down_proj"):
                 p = module.down_proj.weight
             if p is not None:
                 # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
@@ -160,41 +172,53 @@ class LaCTPreTrainedModel(PreTrainedModel):
                 # Having just p *= scale would repeatedly scale it down
                 nn.init.kaiming_uniform_(p, a=math.sqrt(5))
                 with torch.no_grad():
-                    p /= math.sqrt(num_residuals_per_layer * self.config.num_hidden_layers)
-        
+                    p /= math.sqrt(
+                        num_residuals_per_layer * self.config.num_hidden_layers
+                    )
+
         if isinstance(module, LaCTSWIGLULayer):
             #### Initialize the parameters of the model
             nn.init.ones_(module.qk_scale)
             nn.init.zeros_(module.qk_offset)
 
-            logger.info(f"in PreTrainedModel initialize fast weights for LaCTSWIGLULayer")
+            logger.info(
+                f"in PreTrainedModel initialize fast weights for LaCTSWIGLULayer"
+            )
             # init w0, w1, w2
             if module.w0_w2_low_rank > 0:
                 module.w0._init_weights()
                 module.w2._init_weights()
             else:
-                nn.init.normal_(module.w0, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
-                nn.init.normal_(module.w2, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
+                nn.init.normal_(
+                    module.w0, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim)
+                )
+                nn.init.normal_(
+                    module.w2, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim)
+                )
 
-        
-            nn.init.normal_(module.w1, mean=0.0, std=1.0/math.sqrt(module.d_h))
-
+            nn.init.normal_(module.w1, mean=0.0, std=1.0 / math.sqrt(module.d_h))
 
 
 class LaCTModel(LaCTPreTrainedModel):
 
-    def __init__(
-        self,
-        config: LaCTSWIGLUConfig
-    ) -> LaCTModel:
+    def __init__(self, config: LaCTSWIGLUConfig) -> LaCTModel:
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList([LaCTBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
-        # for flame, full act_ckpt will throw error if we fuse the last layer norm, 
-        self.norm = (RMSNorm if config.last_layer_fuse_norm else nn.RMSNorm)(config.hidden_size, eps=config.norm_eps)
+        self.embeddings = nn.Embedding(
+            config.vocab_size, config.hidden_size, self.padding_idx
+        )
+        self.layers = nn.ModuleList(
+            [
+                LaCTBlock(config, layer_idx)
+                for layer_idx in range(config.num_hidden_layers)
+            ]
+        )
+        # for flame, full act_ckpt will throw error if we fuse the last layer norm,
+        self.norm = (RMSNorm if config.last_layer_fuse_norm else nn.RMSNorm)(
+            config.hidden_size, eps=config.norm_eps
+        )
 
         self.gradient_checkpointing = False
 
@@ -216,21 +240,37 @@ class LaCTModel(LaCTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        **kwargs: Unpack[Any]
+        **kwargs: Unpack[Any],
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         if output_attentions:
             warnings.warn(
                 "`TransformerModel` does not support output attention weights now, so `output_attentions` is set to `False`."
             )
             output_attentions = False
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        use_cache = use_cache if use_cache is not None else (self.config.use_cache if not self.training else False)
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
+        )
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        use_cache = (
+            use_cache
+            if use_cache is not None
+            else (self.config.use_cache if not self.training else False)
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+            raise ValueError(
+                "You cannot specify both input_ids and inputs_embeds at the same time"
+            )
         elif input_ids is None and inputs_embeds is None:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
@@ -266,7 +306,7 @@ class LaCTModel(LaCTPreTrainedModel):
                     past_key_values,
                     output_attentions,
                     use_cache,
-                    **kwargs
+                    **kwargs,
                 )
             else:
                 layer_outputs = layer(
@@ -275,7 +315,7 @@ class LaCTModel(LaCTPreTrainedModel):
                     past_key_values=past_key_values,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
-                    **kwargs
+                    **kwargs,
                 )
 
             hidden_states = layer_outputs[0]
@@ -293,13 +333,17 @@ class LaCTModel(LaCTPreTrainedModel):
             all_hidden_states += (hidden_states,)
 
         if not return_dict:
-            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_attns] if v is not None)
+            return tuple(
+                v
+                for v in [hidden_states, next_cache, all_hidden_states, all_attns]
+                if v is not None
+            )
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
-            attentions=all_attns
+            attentions=all_attns,
         )
 
 
@@ -344,7 +388,7 @@ class LaCTForCausalLM(LaCTPreTrainedModel, GenerationMixin):
         inputs_embeds: Optional[torch.Tensor] = None,
         use_cache: bool = True,
         logits_to_keep: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ):
         use_cache = False
         # only last token for `inputs_ids` if the `past_key_values` is not empty.
@@ -352,22 +396,24 @@ class LaCTForCausalLM(LaCTPreTrainedModel, GenerationMixin):
             input_ids = input_ids[:, -1:]
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and len(past_key_values) == 0:
-            model_inputs = {'inputs_embeds': inputs_embeds}
+            model_inputs = {"inputs_embeds": inputs_embeds}
         else:
             # The `contiguous()` here is necessary to have a static stride during decoding. torchdynamo otherwise
             # recompiles graphs as the stride of the inputs is a guard.
             # Ref: https://github.com/huggingface/transformers/pull/29114
             # TODO: use `next_tokens` directly instead.
-            model_inputs = {'input_ids': input_ids.contiguous()}
+            model_inputs = {"input_ids": input_ids.contiguous()}
 
         if logits_to_keep is not None:
-            model_inputs['logits_to_keep'] = logits_to_keep
+            model_inputs["logits_to_keep"] = logits_to_keep
 
-        model_inputs.update({
-            'past_key_values': None, # past_key_values,
-            'use_cache': use_cache,
-            'attention_mask': attention_mask,
-        })
+        model_inputs.update(
+            {
+                "past_key_values": None,  # past_key_values,
+                "use_cache": use_cache,
+                "attention_mask": attention_mask,
+            }
+        )
         return model_inputs
 
     @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
@@ -383,14 +429,22 @@ class LaCTForCausalLM(LaCTPreTrainedModel, GenerationMixin):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         logits_to_keep: Optional[int] = 0,
-        **kwargs: Unpack[Any]
+        **kwargs: Unpack[Any],
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         use_cache = False
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         outputs = self.model(
             input_ids=input_ids,
@@ -401,16 +455,20 @@ class LaCTForCausalLM(LaCTPreTrainedModel, GenerationMixin):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            **kwargs
+            **kwargs,
         )
 
         hidden_states = outputs[0]
         fuse_linear_and_cross_entropy = self.config.fuse_cross_entropy and self.training
-        logits = None if fuse_linear_and_cross_entropy else self.lm_head(hidden_states[:, -logits_to_keep:])
+        logits = (
+            None
+            if fuse_linear_and_cross_entropy
+            else self.lm_head(hidden_states[:, -logits_to_keep:])
+        )
 
         loss = None
         if labels is not None:
-            if getattr(self, 'criterion', None) is None:
+            if getattr(self, "criterion", None) is None:
                 if fuse_linear_and_cross_entropy:
                     criterion = FusedLinearCrossEntropyLoss()
                 elif self.config.fuse_cross_entropy:
@@ -421,9 +479,17 @@ class LaCTForCausalLM(LaCTPreTrainedModel, GenerationMixin):
                 criterion = self.criterion
             # Enable model parallelism
             labels = labels.to(hidden_states.device)
-            labels = torch.cat((labels[..., 1:], torch.full_like(labels[:, :1], criterion.ignore_index)), 1)
+            labels = torch.cat(
+                (
+                    labels[..., 1:],
+                    torch.full_like(labels[:, :1], criterion.ignore_index),
+                ),
+                1,
+            )
             if fuse_linear_and_cross_entropy:
-                loss = criterion(hidden_states, labels, self.lm_head.weight, self.lm_head.bias)
+                loss = criterion(
+                    hidden_states, labels, self.lm_head.weight, self.lm_head.bias
+                )
             else:
                 loss = criterion(logits.view(labels.numel(), -1), labels.view(-1))
 

@@ -16,8 +16,9 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         num_attn_heads (int, optional): The number of attention heads in the model. Defaults to 32.
         num_lact_heads (int, optional): The number of feed-forward heads in the model. Defaults to 4.
     """
-    model_type = 'lact_swiglu'
-    keys_to_ignore_at_inference = ['past_key_values']
+
+    model_type = "lact_swiglu"
+    keys_to_ignore_at_inference = ["past_key_values"]
 
     def __init__(
         self,
@@ -31,18 +32,19 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         lact_chunk_size: int = 2048,
         use_muon: bool = False,
         lr_dim: int = 1,
-        qkv_silu: bool = True,
-        lr_parameterization: str = 'mamba',
+        qkv_silu: bool = True,  # if True, apply silu to q, k, v.
+        no_v_silu: bool = False,  # if True, don't apply silu to v, will overwrite qkv_silu.
+        lr_parameterization: str = "mamba",
         learnable_ttt_scale: bool = True,
         use_momentum: bool = True,
-        ttt_loss_type: str = "dot_product", # "l2"
-        ttt_prenorm: bool = False,    # pre-norm or post-norm for ttt.   
+        ttt_loss_type: str = "dot_product",  # "l2"
+        ttt_prenorm: bool = False,  # pre-norm or post-norm for ttt.
         # prenorm ttt:  state = state + f(norm(state))
         # postnorm ttt:  state = norm(state + f(state)
-        ttt_nope: bool = False, # if True, no positional encoding for query and key used in ttt.  
-        w0_w2_low_rank: int = -1, # -1 means fully learnable.  > 1 means low rank parameterization of the initial learnable weights. 
+        ttt_nope: bool = False,  # if True, no positional encoding for query and key used in ttt.
+        w0_w2_low_rank: int = -1,  # -1 means fully learnable.  > 1 means low rank parameterization of the initial learnable weights.
         window_size: int = 2048,
-        rope_theta: Optional[float] = 10000.,
+        rope_theta: Optional[float] = 10000.0,
         max_position_embeddings: int = 2048,
         hidden_ratio: Optional[int] = 4,
         intermediate_size: Optional[int] = None,
@@ -61,6 +63,8 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         fuse_cross_entropy: bool = True,
         vocab_size: int = 32000,
         fw_init_gain: float = 0.5,
+        use_fused_kernel: bool = False,  # use triton kernel for ttt implementation
+        fp32_states: bool = False,  # whether to keep the fast weights in fp32
         **kwargs,
     ):
         self.hidden_size = hidden_size
@@ -74,6 +78,7 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         self.use_muon = use_muon
         self.lr_dim = lr_dim
         self.qkv_silu = qkv_silu
+        self.no_v_silu = no_v_silu
         self.window_size = window_size
         self.lr_parameterization = lr_parameterization
         self.learnable_ttt_scale = learnable_ttt_scale
@@ -92,7 +97,7 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         self.use_cache = use_cache
 
         self.fuse_norm = fuse_norm
-        self.last_layer_fuse_norm = last_layer_fuse_norm # seems that you need to set this to False to use activation checkpointing for every layer. 
+        self.last_layer_fuse_norm = last_layer_fuse_norm  # seems that you need to set this to False to use activation checkpointing for every layer.
         self.fuse_swiglu = fuse_swiglu
         self.fuse_cross_entropy = fuse_cross_entropy
         self.vocab_size = vocab_size
@@ -101,6 +106,8 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         self.ttt_loss_type = ttt_loss_type
         self.w0_w2_low_rank = w0_w2_low_rank
         self.fw_init_gain = fw_init_gain
+        self.use_fused_kernel = use_fused_kernel
+        self.fp32_states = fp32_states
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
